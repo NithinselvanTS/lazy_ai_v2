@@ -4,3 +4,4 @@ openai
 PyGithub
 requests
 pydantic
+duckduckgo-search

@@ -9,11 +9,12 @@ from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 from openai import OpenAI
 from github import Github
+from duckduckgo_search import DDGS
 
 app = FastAPI(title="Productive Laziness AI")
 
 # ---------------------------------------------------------
-# Keys & Client Setup (Reads Render Environment Variables)
+# Keys & Client Setup (Render Environment Variables)
 # ---------------------------------------------------------
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
@@ -78,6 +79,23 @@ tools_spec = [
     {
         "type": "function",
         "function": {
+            "name": "web_search",
+            "description": "Search the web for up-to-date facts, current events, documentation, or links.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The exact web search keywords."
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "narrate_text",
             "description": "Convert text or quotes into speech audio using ElevenLabs.",
             "parameters": {
@@ -96,21 +114,21 @@ tools_spec = [
         "type": "function",
         "function": {
             "name": "create_github_pr",
-            "description": "Create a GitHub issue or pull request summary.",
+            "description": "Create a GitHub issue or task tracker entry.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "repo_name": {
                         "type": "string",
-                        "description": "The target repository in the format 'username/reponame'."
+                        "description": "The target repository in format 'username/reponame'."
                     },
                     "title": {
                         "type": "string",
-                        "description": "Title of the PR/issue."
+                        "description": "Title of the issue."
                     },
                     "body": {
                         "type": "string",
-                        "description": "Description content of the PR/issue."
+                        "description": "Body details of the issue."
                     }
                 },
                 "required": ["repo_name", "title", "body"]
@@ -118,6 +136,19 @@ tools_spec = [
         }
     }
 ]
+
+def perform_web_search(query: str) -> str:
+    try:
+        results = DDGS().text(query, max_results=4)
+        if not results:
+            return "No web results found for that query."
+        
+        formatted = []
+        for r in results:
+            formatted.append(f"• **[{r.get('title')}]({r.get('href')})**\n{r.get('body')}")
+        return "\n\n".join(formatted)
+    except Exception as e:
+        return f"Search lookup error: {str(e)}"
 
 # ---------------------------------------------------------
 # Web Routes & Handlers
@@ -130,7 +161,7 @@ def get_ui():
 
 @app.post("/tools/narrate")
 def narrate_response(req: NarrateReq):
-    voice_id = "JBFqnCBsd6RMkjVDRZzb"  # George voice
+    voice_id = "JBFqnCBsd6RMkjVDRZzb"
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 
     headers = {
@@ -173,13 +204,15 @@ def handle_chat(req: ChatReq):
         "Keep responses direct, sharp, and helpful. Use tools when requested."
     )
 
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_input}
+    ]
+
     try:
         response = client.chat.completions.create(
             model="openai/gpt-oss-120b",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_input}
-            ],
+            messages=messages,
             tools=tools_spec,
             tool_choice="auto"
         )
@@ -187,16 +220,40 @@ def handle_chat(req: ChatReq):
 
         if msg.tool_calls:
             call = msg.tool_calls[0]
-            if call.function.name == "narrate_text":
+            
+            # Tool 1: Web Search
+            if call.function.name == "web_search":
+                args = json.loads(call.function.arguments)
+                search_query = args.get("query", "")
+                raw_search_results = perform_web_search(search_query)
+
+                # Feed search results back into model for a synthesis
+                messages.append(msg)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": raw_search_results
+                })
+
+                follow_up = client.chat.completions.create(
+                    model="openai/gpt-oss-120b",
+                    messages=messages
+                )
+                final_answer = follow_up.choices[0].message.content or raw_search_results
+                output = (
+                    f"{streak_banner}🔍 **Web Search Results for:** *{search_query}*\n\n"
+                    f"{final_answer}"
+                )
+                return {"reply": output, "response": output, "message": output, "text": output}
+
+            # Tool 2: Voice Narration
+            elif call.function.name == "narrate_text":
                 args = json.loads(call.function.arguments)
                 tts_result = narrate_response(NarrateReq(text=args.get("text", "")))
                 final_output = streak_banner + tts_result
-                return {
-                    "reply": final_output,
-                    "response": final_output,
-                    "message": final_output,
-                    "text": final_output
-                }
+                return {"reply": final_output, "response": final_output, "message": final_output, "text": final_output}
+
+            # Tool 3: GitHub Tracker
             elif call.function.name == "create_github_pr":
                 args = json.loads(call.function.arguments)
                 try:
@@ -212,27 +269,12 @@ def handle_chat(req: ChatReq):
                     pr_result = f"⚠️ GitHub Error: {str(gh_err)}"
 
                 final_output = streak_banner + pr_result
-                return {
-                    "reply": final_output,
-                    "response": final_output,
-                    "message": final_output,
-                    "text": final_output
-                }
+                return {"reply": final_output, "response": final_output, "message": final_output, "text": final_output}
 
         bot_text = msg.content or "Processing complete."
         final_output = streak_banner + bot_text
-        return {
-            "reply": final_output,
-            "response": final_output,
-            "message": final_output,
-            "text": final_output
-        }
+        return {"reply": final_output, "response": final_output, "message": final_output, "text": final_output}
 
     except Exception as exc:
         err_msg = f"{streak_banner}⚠️ An error occurred: {str(exc)}"
-        return {
-            "reply": err_msg,
-            "response": err_msg,
-            "message": err_msg,
-            "text": err_msg
-        }
+        return {"reply": err_msg, "response": err_msg, "message": err_msg, "text": err_msg}
