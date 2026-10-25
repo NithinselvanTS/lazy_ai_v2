@@ -1,209 +1,3 @@
-import os
-import json
-import re
-import base64
-import datetime
-from typing import Optional, List
-import requests
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, FileResponse
-from pydantic import BaseModel
-from openai import OpenAI
-from github import Github
-from duckduckgo_search import DDGS
-
-app = FastAPI(title="Productive Laziness AI")
-
-# ---------------------------------------------------------
-# Keys & Client Configuration
-# ---------------------------------------------------------
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
-OMDB_API_KEY = os.environ.get("OMDB_API_KEY", "").strip()
-
-client = OpenAI(
-    base_url="https://api.groq.com/openai/v1",
-    api_key=GROQ_API_KEY.strip() if GROQ_API_KEY else "unconfigured_key"
-)
-
-gh = Github(GITHUB_TOKEN.strip()) if GITHUB_TOKEN else None
-
-# ---------------------------------------------------------
-# Persistent Streak Tracker
-# ---------------------------------------------------------
-STREAK_FILE = "streak.json"
-
-def get_streak_stats() -> dict:
-    today_str = datetime.date.today().isoformat()
-    default_stats = {"last_active": today_str, "streak_days": 1, "interactions": 0}
-
-    if not os.path.exists(STREAK_FILE):
-        with open(STREAK_FILE, "w") as f:
-            json.dump(default_stats, f)
-        return default_stats
-
-    try:
-        with open(STREAK_FILE, "r") as f:
-            data = json.load(f)
-    except Exception:
-        data = default_stats
-
-    last_date = datetime.date.fromisoformat(data.get("last_active", today_str))
-    today = datetime.date.today()
-    diff = (today - last_date).days
-
-    if diff == 1:
-        data["streak_days"] += 1
-        data["last_active"] = today_str
-    elif diff > 1:
-        data["streak_days"] = 1
-        data["last_active"] = today_str
-
-    data["interactions"] = data.get("interactions", 0) + 1
-
-    with open(STREAK_FILE, "w") as f:
-        json.dump(data, f)
-
-    return data
-
-# ---------------------------------------------------------
-# Live Web Search (DuckDuckGo Fallback)
-# ---------------------------------------------------------
-def perform_web_search(query: str) -> str:
-    try:
-        ddgs = DDGS()
-        clean_q = re.sub(r"\b(202[4-9]|today)\b", "", query, flags=re.IGNORECASE).strip()
-        search_term = clean_q if clean_q else query
-
-        results = ddgs.text(search_term, max_results=4)
-        if not results:
-            results = ddgs.news(search_term, max_results=4)
-
-        if not results:
-            return ""
-
-        formatted = []
-        for r in results:
-            title = r.get("title") or "Article"
-            link = r.get("href") or r.get("url") or "#"
-            body = r.get("body") or r.get("excerpt") or ""
-            formatted.append(f"• **[{title}]({link})**\n{body}")
-        return "\n\n".join(formatted)
-    except Exception:
-        return ""
-
-# ---------------------------------------------------------
-# Schemas & Tool Definitions
-# ---------------------------------------------------------
-class ChatReq(BaseModel):
-    prompt: Optional[str] = None
-    message: Optional[str] = None
-    history: Optional[List[dict]] = []
-
-class NarrateReq(BaseModel):
-    text: str
-
-tools_spec = [
-    {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": "Search the live web for facts, documentation, releases, or news.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The exact search query."
-                    }
-                },
-                "required": ["query"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "narrate_text",
-            "description": "Convert text into spoken audio via ElevenLabs.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "text": {
-                        "type": "string",
-                        "description": "The text to narrate."
-                    }
-                },
-                "required": ["text"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "create_github_pr",
-            "description": "Create a GitHub issue or task tracker entry.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "repo_name": {
-                        "type": "string",
-                        "description": "Target repository formatted as 'owner/repo'."
-                    },
-                    "title": {
-                        "type": "string",
-                        "description": "Title of the issue."
-                    },
-                    "body": {
-                        "type": "string",
-                        "description": "Body details of the issue."
-                    }
-                },
-                "required": ["repo_name", "title", "body"]
-            }
-        }
-    }
-]
-
-# ---------------------------------------------------------
-# Web Routes
-# ---------------------------------------------------------
-@app.get("/", response_class=HTMLResponse)
-def get_ui():
-    if os.path.exists("index.html"):
-        return FileResponse("index.html")
-    return HTMLResponse("<h1>index.html not found.</h1>")
-
-@app.post("/tools/narrate")
-def narrate_response(req: NarrateReq):
-    voice_id = "JBFqnCBsd6RMkjVDRZzb"
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-
-    headers = {
-        "Accept": "audio/mpeg",
-        "Content-Type": "application/json",
-        "xi-api-key": ELEVENLABS_API_KEY.strip()
-    }
-    payload = {
-        "text": req.text,
-        "model_id": "eleven_multilingual_v2",
-        "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
-    }
-
-    resp = requests.post(url, json=payload, headers=headers)
-    if resp.status_code != 200:
-        return f"⚠️ **ElevenLabs Notice:** API Error ({resp.status_code}): {resp.text}"
-
-    audio_b64 = base64.b64encode(resp.content).decode("utf-8")
-    return (
-        f'🎙️ **ElevenLabs Voice Output:**<br>"{req.text}"<br><br>'
-        f'<audio controls autoplay style="width: 100%; margin-top: 8px;">'
-        f'<source src="data:audio/mpeg;base64,{audio_b64}" type="audio/mpeg">'
-        f'Your browser does not support audio playback.'
-        f'</audio>'
-    )
-
 @app.post("/api/chat")
 @app.post("/chat")
 def handle_chat(req: ChatReq):
@@ -227,7 +21,7 @@ def handle_chat(req: ChatReq):
         followup_user = (
             f"User query: {raw_input}\n\nLive Search Results:\n{search_res}"
             if search_res
-            else f"User query: {raw_input}\n\n(No search snippets returned. Supply all runtimes, ratings, and streaming availability directly from knowledge)."
+            else f"User query: {raw_input}\n\n(No search snippets returned. Supply all relevant information directly from knowledge)."
         )
 
         try:
@@ -245,24 +39,26 @@ def handle_chat(req: ChatReq):
         out = f"{streak_banner}🔍 **Web Search Results for:** *{clean_query}*\n\n{ans}"
         return {"reply": out, "response": out, "message": out, "text": out}
 
-    # Autonomous Expansion for 1-3 Word Queries
+    # Autonomous 360° Productive Laziness Dossier (1-3 word queries)
     if len(words) <= 3 and not is_tool_cmd:
         dossier_system = (
             "You are Productive Laziness AI, an autonomous coprocessor engineered for extreme user efficiency. "
-            "The user gave a short keyword. NEVER output comic origins, creator biographies, or conversational questions.\n\n"
-            "MANDATORY FORMAT:\n"
-            "1. Output a Markdown table listing all major theatrical feature films/releases with exact columns:\n"
+            "The user provided a short keyword. Do NOT ask clarifying questions or present options. Deliver an exhaustive, all-in-one dossier.\n\n"
+            "MANDATORY STRUCTURE FOR CHARACTERS / HEROES / FRANCHISES:\n"
+            "1. **Executive Profile & Identity**: Real name, affiliations, creator origins, and what they do.\n"
+            "2. **Powers, Armor & Specialties**: Signature tech, suits, intellect, combat style, and unique abilities.\n"
+            "3. **Screen Appearances & Streaming Guide**: A clean Markdown Table listing major cinematic titles with columns:\n"
             "   | # | Title | Release Year | Runtime | IMDb Rating | Rotten Tomatoes | Where to Watch (Streaming) |\n"
-            "2. Under the table, provide: Recommended Watch Order.\n"
-            "3. End with a 2-sentence 'Lazy Verdict' on which entries are essential and which to skip.\n"
-            "(If the term is technical like 'fastapi', provide an architecture breakdown and code boilerplate instead)."
+            "4. **The Lazy Verdict**: 2-sentence summary of the essential watch/read path and what can be skipped.\n\n"
+            "IF THE PROMPT IS TECHNICAL (e.g., 'fastapi', 'postgres', 'docker'):\n"
+            "- Provide an architectural overview, Mermaid diagram, key strengths/trade-offs, and code boilerplate."
         )
 
         response = client.chat.completions.create(
             model="openai/gpt-oss-120b",
             messages=[
                 {"role": "system", "content": dossier_system},
-                {"role": "user", "content": f"Generate the Productive Laziness Dossier for: '{raw_input}'"}
+                {"role": "user", "content": f"Generate the complete 360° Productive Laziness Dossier for: '{raw_input}'"}
             ]
         )
         final_text = response.choices[0].message.content or "Completed."
