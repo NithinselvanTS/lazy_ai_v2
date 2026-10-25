@@ -14,7 +14,7 @@ from duckduckgo_search import DDGS
 app = FastAPI(title="Productive Laziness AI")
 
 # ---------------------------------------------------------
-# Keys & Client Setup (Reads Render Environment Variables)
+# Keys & Client Setup (Groq via OpenAI Client SDK)
 # ---------------------------------------------------------
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
@@ -211,7 +211,7 @@ def handle_chat(req: ChatReq):
 
     try:
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="llama-3.1-8b-instant",
             messages=messages,
             tools=tools_spec,
             tool_choice="auto"
@@ -228,7 +228,7 @@ def handle_chat(req: ChatReq):
                 raw_search_results = perform_web_search(search_query)
 
                 follow_up = client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
+                    model="llama-3.1-8b-instant",
                     messages=[
                         {
                             "role": "system",
