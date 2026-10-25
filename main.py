@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import base64
 import datetime
 from typing import Optional
@@ -14,7 +15,7 @@ from duckduckgo_search import DDGS
 app = FastAPI(title="Productive Laziness AI")
 
 # ---------------------------------------------------------
-# Keys & Client Setup (Groq via OpenAI Client SDK)
+# Keys & Client Setup (Reads Render Environment Variables)
 # ---------------------------------------------------------
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
@@ -80,13 +81,13 @@ tools_spec = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Search the web for up-to-date facts, current events, documentation, or links.",
+            "description": "Search the live web for real-time news, information, or documentation.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "The exact web search keywords."
+                        "description": "The search keywords or query."
                     }
                 },
                 "required": ["query"]
@@ -120,7 +121,7 @@ tools_spec = [
                 "properties": {
                     "repo_name": {
                         "type": "string",
-                        "description": "The target repository in format 'username/reponame'."
+                        "description": "Target repository formatted as 'username/reponame'."
                     },
                     "title": {
                         "type": "string",
@@ -151,7 +152,7 @@ def perform_web_search(query: str) -> str:
         return f"Search lookup error: {str(e)}"
 
 # ---------------------------------------------------------
-# Web Routes & Handlers
+# Web Routes
 # ---------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 def get_ui():
@@ -191,13 +192,33 @@ def narrate_response(req: NarrateReq):
 @app.post("/api/chat")
 @app.post("/chat")
 def handle_chat(req: ChatReq):
-    user_input = req.prompt or req.message or ""
+    user_input = (req.prompt or req.message or "").strip()
 
     streak_data = get_streak_stats()
     streak_banner = (
         f"🔥 **Streak: {streak_data['streak_days']} Day(s)** | "
         f"Interactions: {streak_data['interactions']}\n\n"
     )
+
+    # Fast path: If the user explicitly asks to search the web, execute search directly
+    lower_input = user_input.lower()
+    if lower_input.startswith("search the web for") or lower_input.startswith("search for") or lower_input.startswith("search "):
+        clean_query = re.sub(r"^(search the web for|search for|search)\s+", "", user_input, flags=re.IGNORECASE).strip()
+        search_res = perform_web_search(clean_query)
+        try:
+            summary = client.chat.completions.create(
+                model="openai/gpt-oss-120b",
+                messages=[
+                    {"role": "system", "content": "You are Productive Laziness AI. Synthesize the web search findings cleanly and concisely."},
+                    {"role": "user", "content": f"User question: {user_input}\n\nSearch results:\n{search_res}"}
+                ]
+            )
+            ans = summary.choices[0].message.content or search_res
+        except Exception:
+            ans = search_res
+
+        out = f"{streak_banner}🔍 **Web Search Results for:** *{clean_query}*\n\n{ans}"
+        return {"reply": out, "response": out, "message": out, "text": out}
 
     system_prompt = (
         "You are Productive Laziness AI, an autonomous developer coprocessor. "
@@ -211,74 +232,64 @@ def handle_chat(req: ChatReq):
 
     try:
         response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model="openai/gpt-oss-120b",
             messages=messages,
             tools=tools_spec,
-            tool_choice="auto"
+            tool_choice="auto",
+            extra_body={"reasoning_format": "hidden"}
         )
         msg = response.choices[0].message
 
         if msg.tool_calls:
             call = msg.tool_calls[0]
             
-            # Tool 1: Web Search
             if call.function.name == "web_search":
                 args = json.loads(call.function.arguments)
-                search_query = args.get("query", "")
-                raw_search_results = perform_web_search(search_query)
-
-                follow_up = client.chat.completions.create(
-                    model="llama-3.1-8b-instant",
+                s_query = args.get("query", user_input)
+                s_res = perform_web_search(s_query)
+                synth = client.chat.completions.create(
+                    model="openai/gpt-oss-120b",
                     messages=[
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are Productive Laziness AI. Summarize and synthesize the "
-                                "provided search results concisely to answer the user's inquiry."
-                            )
-                        },
-                        {
-                            "role": "user",
-                            "content": f"User question: {user_input}\n\nSearch results:\n{raw_search_results}"
-                        }
+                        {"role": "system", "content": "Summarize the web results clearly."},
+                        {"role": "user", "content": f"Query: {user_input}\n\nResults:\n{s_res}"}
                     ]
                 )
-                final_answer = follow_up.choices[0].message.content or raw_search_results
-                output = (
-                    f"{streak_banner}🔍 **Web Search Results for:** *{search_query}*\n\n"
-                    f"{final_answer}"
-                )
-                return {"reply": output, "response": output, "message": output, "text": output}
+                final_text = synth.choices[0].message.content or s_res
+                out = f"{streak_banner}🔍 **Web Search Results for:** *{s_query}*\n\n{final_text}"
+                return {"reply": out, "response": out, "message": out, "text": out}
 
-            # Tool 2: Voice Narration
             elif call.function.name == "narrate_text":
                 args = json.loads(call.function.arguments)
                 tts_result = narrate_response(NarrateReq(text=args.get("text", "")))
-                final_output = streak_banner + tts_result
-                return {"reply": final_output, "response": final_output, "message": final_output, "text": final_output}
+                out = streak_banner + tts_result
+                return {"reply": out, "response": out, "message": out, "text": out}
 
-            # Tool 3: GitHub Tracker
             elif call.function.name == "create_github_pr":
                 args = json.loads(call.function.arguments)
                 try:
                     if not gh:
                         raise ValueError("GitHub token is not configured.")
                     repo = gh.get_repo(args.get("repo_name"))
-                    issue = repo.create_issue(
-                        title=args.get("title"),
-                        body=args.get("body")
-                    )
+                    issue = repo.create_issue(title=args.get("title"), body=args.get("body"))
                     pr_result = f"🚀 **GitHub Task Created:** [{issue.title}]({issue.html_url})"
                 except Exception as gh_err:
                     pr_result = f"⚠️ GitHub Error: {str(gh_err)}"
-
-                final_output = streak_banner + pr_result
-                return {"reply": final_output, "response": final_output, "message": final_output, "text": final_output}
+                out = streak_banner + pr_result
+                return {"reply": out, "response": out, "message": out, "text": out}
 
         bot_text = msg.content or "Processing complete."
-        final_output = streak_banner + bot_text
-        return {"reply": final_output, "response": final_output, "message": final_output, "text": final_output}
+        out = streak_banner + bot_text
+        return {"reply": out, "response": out, "message": out, "text": out}
 
     except Exception as exc:
-        err_msg = f"{streak_banner}⚠️ An error occurred: {str(exc)}"
+        err_str = str(exc)
+        # Auto-recover if Groq trips with a 'failed_generation' 400 error
+        if "failed_generation" in err_str:
+            match = re.search(r'"query":\s*"([^"]+)"', err_str)
+            recovered_query = match.group(1) if match else user_input
+            s_res = perform_web_search(recovered_query)
+            out = f"{streak_banner}🔍 **Web Search Results for:** *{recovered_query}*\n\n{s_res}"
+            return {"reply": out, "response": out, "message": out, "text": out}
+
+        err_msg = f"{streak_banner}⚠️ An error occurred: {err_str}"
         return {"reply": err_msg, "response": err_msg, "message": err_msg, "text": err_msg}
