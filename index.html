@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Productive Laziness AI</title>
-    <!-- Marked.js to parse Markdown tables, bold tags, and links -->
+    <!-- Marked.js to parse Markdown tables, headers, and code -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
         * {
@@ -24,11 +24,18 @@
             padding: 16px 24px;
             background-color: #0f172a;
             border-bottom: 1px solid #1e293b;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
         header h1 {
             font-size: 1.25rem;
             color: #38bdf8;
             font-weight: 700;
+        }
+        header .badge {
+            font-size: 0.8rem;
+            color: #94a3b8;
         }
         #chat-window {
             flex: 1;
@@ -40,9 +47,9 @@
         }
         .message-bubble {
             max-width: 85%;
-            padding: 14px 18px;
+            padding: 16px 20px;
             border-radius: 12px;
-            line-height: 1.5;
+            line-height: 1.6;
             font-size: 0.95rem;
             word-wrap: break-word;
         }
@@ -59,11 +66,20 @@
             border-bottom-left-radius: 2px;
             border: 1px solid #334155;
         }
+        .bot-message h3 {
+            color: #38bdf8;
+            margin: 14px 0 6px 0;
+            font-size: 1.05rem;
+        }
+        .bot-message ul {
+            margin-left: 20px;
+            margin-bottom: 10px;
+        }
         /* Markdown Table Card Styles */
         .bot-message table {
             width: 100%;
             border-collapse: collapse;
-            margin: 12px 0;
+            margin: 14px 0;
             font-size: 0.9rem;
             background-color: #0f172a;
             border-radius: 8px;
@@ -139,16 +155,17 @@
 <body>
     <header>
         <h1>Productive Laziness AI</h1>
+        <span class="badge">Autonomous Coprocessor</span>
     </header>
 
     <div id="chat-window">
         <div class="message-bubble bot-message">
-            Hey! I'm your Productive Laziness AI. Give me an idea to design, an audio summary to narrate, or a link to decode.
+            Hey! I'm your Productive Laziness AI. Give me any keyword, character, technical architecture to design, or prompt to narrate.
         </div>
     </div>
 
     <div class="input-bar">
-        <input type="text" id="prompt-input" placeholder="Type a message or single keyword..." autocomplete="off">
+        <input type="text" id="prompt-input" placeholder="Type a message or single keyword (e.g. iron man, batman, fastapi)..." autocomplete="off">
         <button id="send-btn">Send</button>
     </div>
 
@@ -180,7 +197,7 @@
             input.value = "";
 
             conversationHistory.push({ role: "user", content: text });
-            const loadingBubble = appendMessage("*Processing your request...*", false);
+            const loadingBubble = appendMessage("*Processing 360° dossier...*", false);
 
             try {
                 const res = await fetch("/api/chat", {
