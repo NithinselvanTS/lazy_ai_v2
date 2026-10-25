@@ -68,29 +68,7 @@ def get_streak_stats() -> dict:
     return data
 
 # ---------------------------------------------------------
-# Layer 1: Deterministic Enrichment (OMDb)
-# ---------------------------------------------------------
-def fetch_omdb_movie(title: str) -> dict:
-    if not OMDB_API_KEY:
-        return {}
-    try:
-        url = f"http://www.omdbapi.com/?t={title}&apikey={OMDB_API_KEY}"
-        resp = requests.get(url, timeout=4).json()
-        if resp.get("Response") == "True":
-            return {
-                "title": resp.get("Title"),
-                "year": resp.get("Year"),
-                "runtime": resp.get("Runtime"),
-                "imdb": resp.get("imdbRating"),
-                "director": resp.get("Director"),
-                "plot": resp.get("Plot")
-            }
-    except Exception:
-        pass
-    return {}
-
-# ---------------------------------------------------------
-# Layer 2: Live Web Search with Resilient Fallback
+# Live Web Search (DuckDuckGo Fallback)
 # ---------------------------------------------------------
 def perform_web_search(query: str) -> str:
     try:
@@ -116,22 +94,8 @@ def perform_web_search(query: str) -> str:
         return ""
 
 # ---------------------------------------------------------
-# System Prompt & Core Directives
+# Schemas & Tool Definitions
 # ---------------------------------------------------------
-SYSTEM_PROMPT = (
-    "You are Productive Laziness AI, an autonomous developer & research coprocessor engineered for extreme user laziness. "
-    "Your user wants high-density, finalized answers with zero conversational fluff.\n\n"
-    "CRITICAL RULES:\n"
-    "1. NEVER answer with conversational questions, pleasantries, or prompts like 'What would you like to know?' or 'Let me know if you need more details'.\n"
-    "2. When prompted with any character, franchise, film, or director (e.g., 'batman', 'avengers', 'nolan', 'spider-man'):\n"
-    "   - Do NOT write general history, creator bios, or comic book origins.\n"
-    "   - IMMEDIATELY provide a clean Markdown Table of all major theatrical/live-action films with columns:\n"
-    "     | # | Film Title | Release Year | Runtime | IMDb Rating | Rotten Tomatoes | Where to Watch (Streaming) |\n"
-    "   - Under the table, provide: Recommended Watch Order (Chronological vs Release) and a 2-sentence 'Lazy Verdict' on viewing priorities.\n"
-    "3. When prompted with technical tools or keywords (e.g., 'fastapi', 'auth', 'postgres'):\n"
-    "   - Provide immediate code diffs or Mermaid.js architecture diagrams without introductory fluff."
-)
-
 class ChatReq(BaseModel):
     prompt: Optional[str] = None
     message: Optional[str] = None
@@ -145,13 +109,13 @@ tools_spec = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Search the live web for facts, documentation, releases, streaming details, or news.",
+            "description": "Search the live web for facts, documentation, releases, or news.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "The exact search terms."
+                        "description": "The exact search query."
                     }
                 },
                 "required": ["query"]
@@ -203,7 +167,7 @@ tools_spec = [
 ]
 
 # ---------------------------------------------------------
-# HTTP Routes
+# Web Routes
 # ---------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 def get_ui():
@@ -251,44 +215,12 @@ def handle_chat(req: ChatReq):
         f"Interactions: {streak_data['interactions']}\n\n"
     )
 
-    # Autonomous Expansion for 1-3 Word Prompts: Enforce screen media dossier
-    lower_words = raw_input.lower().split()
-    is_tool_cmd = any(lower_words[0].startswith(x) for x in ["search", "lookup", "narrate", "create"]) if lower_words else False
-
-    if len(lower_words) <= 3 and not is_tool_cmd:
-        user_prompt = (
-            f"Generate the definitive Productive Laziness Media & Franchise Dossier for: '{raw_input}'.\n\n"
-            f"MANDATORY FORMAT:\n"
-            f"1. Do NOT write comic origins, character trivia, or introductions.\n"
-            f"2. Output a clean Markdown Table of all major theatrical/live-action films with columns:\n"
-            f"   | # | Film Title | Release Year | Runtime | IMDb Rating | Rotten Tomatoes | Where to Watch (Streaming) |\n"
-            f"3. Recommended Watch Order.\n"
-            f"4. A 2-sentence 'Lazy Verdict' on which are essential and which to skip.\n"
-            f"If '{raw_input}' is a software term, provide the architecture diagram, code boilerplate, and key concepts."
-        )
-    else:
-        user_prompt = raw_input
-
-    # Optional deterministic OMDb lookup
-    movie_info = fetch_omdb_movie(raw_input)
-    movie_addon = ""
-    if movie_info:
-        movie_addon = (
-            f"\n[Verified Metadata: Title: {movie_info.get('title')}, "
-            f"Year: {movie_info.get('year')}, Runtime: {movie_info.get('runtime')}, "
-            f"IMDb: {movie_info.get('imdb')}/10]"
-        )
-
-    # Conversation history injection
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    if req.history:
-        for turn in req.history[-6:]:
-            if turn.get("role") in ["user", "assistant"] and turn.get("content"):
-                messages.append({"role": turn["role"], "content": turn["content"]})
-    messages.append({"role": "user", "content": f"{user_prompt}{movie_addon}"})
+    clean_lower = raw_input.lower().strip()
+    words = clean_lower.split()
+    is_tool_cmd = any(words[0].startswith(x) for x in ["search", "lookup", "narrate", "create"]) if words else False
 
     # Direct search prefix handling
-    if lower_words and lower_words[0] in ["search", "lookup"]:
+    if words and words[0] in ["search", "lookup"]:
         clean_query = re.sub(r"^(search the web for|search for|search|lookup)\s+", "", raw_input, flags=re.IGNORECASE).strip()
         search_res = perform_web_search(clean_query)
 
@@ -302,7 +234,7 @@ def handle_chat(req: ChatReq):
             summary = client.chat.completions.create(
                 model="openai/gpt-oss-120b",
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": "You are Productive Laziness AI. Answer concisely and synthesize results directly."},
                     {"role": "user", "content": followup_user}
                 ]
             )
@@ -312,6 +244,43 @@ def handle_chat(req: ChatReq):
 
         out = f"{streak_banner}🔍 **Web Search Results for:** *{clean_query}*\n\n{ans}"
         return {"reply": out, "response": out, "message": out, "text": out}
+
+    # Autonomous Expansion for 1-3 Word Queries
+    if len(words) <= 3 and not is_tool_cmd:
+        dossier_system = (
+            "You are Productive Laziness AI, an autonomous coprocessor engineered for extreme user efficiency. "
+            "The user gave a short keyword. NEVER output comic origins, creator biographies, or conversational questions.\n\n"
+            "MANDATORY FORMAT:\n"
+            "1. Output a Markdown table listing all major theatrical feature films/releases with exact columns:\n"
+            "   | # | Title | Release Year | Runtime | IMDb Rating | Rotten Tomatoes | Where to Watch (Streaming) |\n"
+            "2. Under the table, provide: Recommended Watch Order.\n"
+            "3. End with a 2-sentence 'Lazy Verdict' on which entries are essential and which to skip.\n"
+            "(If the term is technical like 'fastapi', provide an architecture breakdown and code boilerplate instead)."
+        )
+
+        response = client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[
+                {"role": "system", "content": dossier_system},
+                {"role": "user", "content": f"Generate the Productive Laziness Dossier for: '{raw_input}'"}
+            ]
+        )
+        final_text = response.choices[0].message.content or "Completed."
+        out = f"{streak_banner}{final_text}"
+        return {"reply": out, "response": out, "message": out, "text": out}
+
+    # Standard conversational multi-turn processing with tools
+    standard_system = (
+        "You are Productive Laziness AI, an autonomous developer & research coprocessor. "
+        "Provide direct, high-density answers without conversational filler. Use tools when requested."
+    )
+
+    messages = [{"role": "system", "content": standard_system}]
+    if req.history:
+        for turn in req.history[-6:]:
+            if turn.get("role") in ["user", "assistant"] and turn.get("content"):
+                messages.append({"role": turn["role"], "content": turn["content"]})
+    messages.append({"role": "user", "content": raw_input})
 
     try:
         response = client.chat.completions.create(
@@ -331,21 +300,16 @@ def handle_chat(req: ChatReq):
                 s_query = args.get("query", raw_input)
                 s_res = perform_web_search(s_query)
 
-                context_block = (
-                    f"Live Search Results:\n{s_res}"
-                    if s_res
-                    else "(No search snippets found. Provide complete table, runtimes, ratings, and streaming sources from knowledge)."
-                )
-
+                context_block = f"Live Search Results:\n{s_res}" if s_res else "(Rely on internal knowledge base)."
                 synth = client.chat.completions.create(
                     model="openai/gpt-oss-120b",
                     messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": f"{user_prompt}\n\n{context_block}"}
+                        {"role": "system", "content": standard_system},
+                        {"role": "user", "content": f"{raw_input}\n\n{context_block}"}
                     ]
                 )
-                final_text = synth.choices[0].message.content or "No response could be compiled."
-                out = f"{streak_banner}{final_text}"
+                final_text = synth.choices[0].message.content or "Search complete."
+                out = f"{streak_banner}🔍 **Web Search Results for:** *{s_query}*\n\n{final_text}"
                 return {"reply": out, "response": out, "message": out, "text": out}
 
             elif call.function.name == "narrate_text":
@@ -372,26 +336,5 @@ def handle_chat(req: ChatReq):
         return {"reply": out, "response": out, "message": out, "text": out}
 
     except Exception as exc:
-        err_str = str(exc)
-        if "failed_generation" in err_str:
-            match = re.search(r'"query":\s*"([^"]+)"', err_str)
-            recovered_query = match.group(1) if match else raw_input
-            s_res = perform_web_search(recovered_query)
-
-            try:
-                fallback_comp = client.chat.completions.create(
-                    model="openai/gpt-oss-120b",
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": f"{user_prompt}\n\nLive Search Results:\n{s_res}"}
-                    ]
-                )
-                ans_text = fallback_comp.choices[0].message.content or s_res
-            except Exception:
-                ans_text = s_res or "Completed."
-
-            out = f"{streak_banner}{ans_text}"
-            return {"reply": out, "response": out, "message": out, "text": out}
-
-        err_msg = f"{streak_banner}⚠️ An error occurred: {err_str}"
+        err_msg = f"{streak_banner}⚠️ An error occurred: {str(exc)}"
         return {"reply": err_msg, "response": err_msg, "message": err_msg, "text": err_msg}
