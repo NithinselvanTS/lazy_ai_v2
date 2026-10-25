@@ -14,7 +14,7 @@ from duckduckgo_search import DDGS
 app = FastAPI(title="Productive Laziness AI")
 
 # ---------------------------------------------------------
-# Keys & Client Setup (Render Environment Variables)
+# Keys & Client Setup (Reads Render Environment Variables)
 # ---------------------------------------------------------
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
@@ -227,54 +227,16 @@ def handle_chat(req: ChatReq):
                 search_query = args.get("query", "")
                 raw_search_results = perform_web_search(search_query)
 
-                # Feed search results back into model for a synthesis
-                messages.append(msg)
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "content": raw_search_results
-                })
-
                 follow_up = client.chat.completions.create(
                     model="openai/gpt-oss-120b",
-                    messages=messages
-                )
-                final_answer = follow_up.choices[0].message.content or raw_search_results
-                output = (
-                    f"{streak_banner}🔍 **Web Search Results for:** *{search_query}*\n\n"
-                    f"{final_answer}"
-                )
-                return {"reply": output, "response": output, "message": output, "text": output}
-
-            # Tool 2: Voice Narration
-            elif call.function.name == "narrate_text":
-                args = json.loads(call.function.arguments)
-                tts_result = narrate_response(NarrateReq(text=args.get("text", "")))
-                final_output = streak_banner + tts_result
-                return {"reply": final_output, "response": final_output, "message": final_output, "text": final_output}
-
-            # Tool 3: GitHub Tracker
-            elif call.function.name == "create_github_pr":
-                args = json.loads(call.function.arguments)
-                try:
-                    if not gh:
-                        raise ValueError("GitHub token is not configured.")
-                    repo = gh.get_repo(args.get("repo_name"))
-                    issue = repo.create_issue(
-                        title=args.get("title"),
-                        body=args.get("body")
-                    )
-                    pr_result = f"🚀 **GitHub Task Created:** [{issue.title}]({issue.html_url})"
-                except Exception as gh_err:
-                    pr_result = f"⚠️ GitHub Error: {str(gh_err)}"
-
-                final_output = streak_banner + pr_result
-                return {"reply": final_output, "response": final_output, "message": final_output, "text": final_output}
-
-        bot_text = msg.content or "Processing complete."
-        final_output = streak_banner + bot_text
-        return {"reply": final_output, "response": final_output, "message": final_output, "text": final_output}
-
-    except Exception as exc:
-        err_msg = f"{streak_banner}⚠️ An error occurred: {str(exc)}"
-        return {"reply": err_msg, "response": err_msg, "message": err_msg, "text": err_msg}
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are Productive Laziness AI. Summarize and synthesize the "
+                                "provided search results concisely to answer the user's inquiry."
+                            )
+                        },
+                        {
+                            "role": "user",
+                            "content": f
